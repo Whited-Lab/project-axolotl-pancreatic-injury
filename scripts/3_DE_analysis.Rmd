@@ -1,0 +1,860 @@
+```{r}
+# Install CRAN packages
+#install.packages(c("tidyverse", "patchwork", "ggrepel", "latex2exp", "pheatmap", "RColorBrewer", "factoextra", "xlsx", "readxl"))
+
+# Install Bioconductor packages
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+#BiocManager::install("GenomeInfoDbData")
+#BiocManager::install("GenomeInfoDb")
+#BiocManager::install(c("tximport", "DESeq2", "vsn"))
+
+
+
+# Load packages
+suppressPackageStartupMessages(
+  {
+    library(tximport)
+    library(tidyverse)
+    library(DESeq2)
+    library(patchwork)
+    library(ggrepel)
+    library(latex2exp)
+    library(pheatmap)
+    library(RColorBrewer)
+    library(factoextra)
+    library(vsn)
+    #library(xlsx)
+    #library(readxl)
+  }
+)
+```
+
+```{r}
+#Define functions
+
+format_t2g <- function(gene_name){
+  
+  #Collect all the name fragments that are pasted together at the end
+  assembly <- c()
+  
+  #Split a gene name like "string [nr]|string [hs]|transcript_id"
+  gene_name_split <- gene_name %>% str_split(pattern = "\\|", simplify = T) %>% .[. != ""]
+  
+  #Iterate over each element and test, if it references a species like [hs]
+  for (el in gene_name_split){
+    substring <- str_split(el, pattern = " ", simplify = T)
+    if (length(substring) > 1){
+      sub_1 <- substring[1]
+      sub_2 <- gsub('\\[|\\]', '', substring[2])
+      assembly <- c(assembly, paste0(sub_2,":",sub_1))      
+    } else {
+      assembly <- c(assembly, substring)
+    }
+  }
+ 
+  if (length(assembly) > 1){
+    return(paste(assembly, collapse = '_'))
+  } else {
+    return(assembly)
+  }
+  
+}
+```
+
+```{r}
+# Load data
+data_dir <- "/n/netscratch/whited_lab/Lab/hsinger/hsinger/MinION_scratch/amex_nanopore_minimal/quant/024_01_V1_PRO_PCR-cDNA_pancreas_full/4_quant"
+sample_sheet <- read.table("/n/netscratch/whited_lab/Lab/cpowell5695/amex_nanopore_minimal old/quant/023_01_V1_amex_PCR-cDNA_pancreas_connor_tanaka/019_samplesheet.tsv", header = T, sep = "\t") #%>% .[c(1:9),]
+sample_sheet$Condition <- factor(sample_sheet$Condition, levels = c("Sham", "Resection"))
+
+subdir_names <- sapply(sample_sheet$Identifier, function(x) paste0(x, "_quant"), USE.NAMES = F)
+files <- file.path(data_dir, subdir_names, "quant.sf")
+
+#The transcript-to-gene file contains three columns
+
+# Gene-ID: Unique identifier for a given gene. The number of Gene-IDs must always be smaller or equal to the amount of transcript IDs
+# Transcript-ID: Unique identifier for a given transcript. Multiple transcript IDs can be associated with the same Gene ID (e.g. first two rows)
+# Gene name: Is unique to the corresponding transcript, of which the transcript ID is used as the tail. The transcript is associated with known gene names
+
+# Gene-ID        | Transcript-ID       | Gene name
+# ---------------+---------------------+----------------------------------------------
+# AMEX60DD000001 | AMEX60DD301000001.1 | nr:ZFP37_hs:ZNF568_AMEX60DD301000001.1
+# AMEX60DD000001 | AMEX60DD301000001.2 | hs:ZNF79_AMEX60DD301000001.2
+# AMEX60DD000002 | AMEX60DD201000002.1 | nr:LOC114595135_hs:ZNF268_AMEX60DD201000002.1
+# AMEX60DD000003 | AMEX60DD201000003.1 | nr:LOC101953204_hs:ZNF850_AMEX60DD201000003.1
+
+tx2gene <- read.csv("/n/whited_lab/Users/aabouelela/amex_genomics/tanaka_AmexT_v47_dnaa/AmexT_v47-AmexG_v6.0-DD_t2g.tsv", sep = "\t", header = T)
+tx2gene$gene_name <- sapply(tx2gene$gene_name, format_t2g)
+
+txi_t  <- tximport(files, type="salmon", tx2gene=tx2gene[,c("transcript_id","transcript_id")], importer=read.delim)
+ddsTxi_t <- DESeqDataSetFromTximport(txi_t, colData = sample_sheet, design = ~ Condition)
+
+txi_g  <- tximport(files, type="salmon", tx2gene=tx2gene[,c("transcript_id", "gene_id")], importer=read.delim)
+ddsTxi_g <- DESeqDataSetFromTximport(txi_g, colData = sample_sheet, design = ~ Condition)
+
+#Verify, that intact_limb is the reference level and therefore appears first
+ddsTxi_g$Condition
+```
+
+```{r}
+prefix <- "024_V1_" 
+
+#Prefiltering
+smallestGroupSize <- 4
+keep_g    <- rowSums(counts(ddsTxi_g) >= 10) >= smallestGroupSize
+ddsTxi_g  <- ddsTxi_g[keep_g,]
+
+keep_t    <- rowSums(counts(ddsTxi_t) >= 10) >= smallestGroupSize
+ddsTxi_t_unfiltered <- ddsTxi_t
+ddsTxi_t  <- ddsTxi_t[keep_t,]
+
+#Differential Gene Expression
+ddsTxi_g <- DESeq(ddsTxi_g)
+res_g_all <-  results(ddsTxi_g) %>% as.data.frame() %>% mutate(gene_id = rownames(.))
+res_g <- res_g_all %>% filter(padj < 0.05)
+
+ddsTxi_t <- DESeq(ddsTxi_t)
+res_t_all <-  results(ddsTxi_t) %>% as.data.frame() %>% mutate(gene_id = rownames(.))
+res_t <- res_t_all %>% filter(padj < 0.05)
+
+#Annotate the gene_ids
+res_g <- res_g %>% mutate(label = sapply(.$gene_id, function(x) (filter(tx2gene, gene_id == x) %>% select(gene_name) %>%
+         #sapply(function(y) gsub("_AMEX.*", "", y)) %>% 
+        paste(collapse = "_")))) %>%
+mutate(label = sapply(.$label, function(x) (ifelse(grepl("_", x), str_split(x, pattern = "_", simplify = T) %>% as.vector() %>% 
+         unique() %>% paste(collapse = "_"), x))))
+
+  
+res_t <- res_t %>% mutate(label = sapply(.$gene_id, function(x) (filter(tx2gene, transcript_id == x) %>% select(gene_name) %>%
+         #sapply(function(y) gsub("_AMEX.*", "", y)) %>%  
+           paste(collapse = "_")))) %>% mutate(label = sapply(.$label, function(x) (ifelse(grepl("_", x), str_split(x, pattern = "_", simplify = T) %>% as.vector() %>% 
+         unique() %>% paste(collapse = "_"), x))))
+
+
+res_g_all <- res_g_all %>% mutate(label = sapply(.$gene_id, function(x) (filter(tx2gene, gene_id == x) %>% select(gene_name) %>%
+         #sapply(function(y) gsub("_AMEX.*", "", y)) %>% 
+        paste(collapse = "_")))) %>%
+mutate(label = sapply(.$label, function(x) (ifelse(grepl("_", x), str_split(x, pattern = "_", simplify = T) %>% as.vector() %>% 
+         unique() %>% paste(collapse = "_"), x))))
+
+  
+res_t_all <- res_t_all %>% mutate(label = sapply(.$gene_id, function(x) (filter(tx2gene, transcript_id == x) %>% select(gene_name) %>%
+         #sapply(function(y) gsub("_AMEX.*", "", y)) %>%  
+           paste(collapse = "_")))) %>% mutate(label = sapply(.$label, function(x) (ifelse(grepl("_", x), str_split(x, pattern = "_", simplify = T) %>% as.vector() %>% 
+         unique() %>% paste(collapse = "_"), x))))
+
+# Function to extract the desired substring
+extract_substring <- function(label) {
+  hs_match <- regmatches(label, regexec("hs:(.*?)(_|$)", label))
+  nr_match <- regmatches(label, regexec("nr:(.*?)(_|$)", label))
+  c_match <- regmatches(label, regexec("c\\(\"(.*?)(_|$)", label))
+  
+  if (!is.na(hs_match[[1]][2])) {
+    return(hs_match[[1]][2])
+  } else if (!is.na(nr_match[[1]][2])) {
+    return(nr_match[[1]][2])
+  } else if (!is.na(c_match[[1]][2])) {
+    return(c_match[[1]][2])
+  } else if (grepl("_", label)) {
+    return(substring(label, 1, regexpr("_", label) - 1))
+  } else {
+    return(label)  # Return the original string if no "hs:" or "nr:" is found and no underscore is present
+  }
+}
+
+tx2gene_new <- tx2gene %>% mutate(new_label = sapply (gene_name, extract_substring))
+   
+res_g_new <- res_g %>% mutate(new_label = sapply(label, extract_substring))
+
+res_g_all_new <- res_g_all %>% mutate(new_label = sapply(label, extract_substring))
+
+
+write.csv(res_g_new, "/n/whited_lab/Users/cpowell5695/amex_nanopore_minimal/analysis/deg_lists/024_tanaka_transcriptome.csv", row.names = FALSE)
+
+#write.table(res_g, "res_g.tsv", sep = "\t", row.names = FALSE, col.names = TRUE)
+
+#write.table(res_g_new, file = "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/024_DEG_sham_vs_res_resg.tsv", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+
+#write.table(res_g_all_new, file = "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/024_DEG_sham_vs_res_resg_all.tsv", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+
+
+
+#write.xlsx(res_g_new, "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/024_DEG_sham_vs_res_resg.xlsx", row.names = FALSE)
+
+#write.xlsx(res_g_all_new, "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/024_DEG_sham_vs_res_resgall.xlsx", row.names = FALSE)
+
+
+
+
+#write.xlsx(res_t, "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/024_DEG_sham_vs_res_rest.xlsx", row.names = FALSE)
+
+#write.xlsx(res_t_all, "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/024_DEG_sham_vs_res_restall.xlsx", row.names = FALSE)
+```
+
+
+```{r}
+library(dplyr)
+
+# Search for each gene_id in res_g through tx2gene
+res_g_search <- res_g_new %>%
+  left_join(tx2gene, by = "gene_id") %>%
+  select(transcript_id, gene_name)
+
+# Use the results of the search to search through the gene_id column of res_t
+res_ftc_matched <- res_g_new_ftc %>%
+  semi_join(res_g_search, by = c("gene_id" = "transcript_id"))
+
+# Create a separate data frame for the rows in res_t that did not match
+res_ftc_unmatched <- res_g_new_ftc %>%
+  anti_join(res_ftc_matched, by = "gene_id")
+
+# Print or use res_t_unmatched as needed
+print(res_ftc_unmatched)
+
+#write.xlsx(res_t_unmatched,"/n/holyscratch01/whited_lab/cpowell/analysis/019_DEG_sham_vs_res_restunmatched.xlsx", row.names = FALSE)
+
+```
+
+```{r}
+# Join res_g_new with tx2gene on gene_id to create a search reference
+#res_g_search <- res_g_new %>%
+  #inner_join(tx2gene_new, by = "gene_id") %>%
+  #select(gene_id)  # Keep only the gene_id column to use for matching
+
+# Filter res_g_new_ftc based on matches in res_g_new
+res_ftc_matched <- res_g_new_ftc %>%
+  semi_join(res_g_new, by = "gene_id")
+
+# Create a separate data frame for rows in res_g_new_ftc that did not match
+res_ftc_unmatched <- res_g_new_ftc %>%
+  anti_join(res_g_new, by = "gene_id")
+
+
+# Filter res_g_new based on matches in res_g_new_ftc
+
+res_salmon_matched <- res_g_new %>%
+  semi_join(res_g_new_ftc, by = "gene_id")
+
+# Create a separate data frame for rows in res_g_new that did not match
+res_salmon_unmatched <- res_g_new %>%
+  anti_join(res_g_new_ftc, by = "gene_id")
+
+
+# Ensure unmatched genes sets are not overlapping (should typically be zero)
+overlapping_unmatched_genes <- intersect(
+  res_ftc_unmatched$gene_id, 
+  res_salmon_unmatched$gene_id
+)
+
+num_overlapping_match_genes <- length(overlapping_unmatched_genes)  # This should ideally be 0
+
+
+# Ensure unmatched genes sets are not overlapping (should typically be zero)
+overlapping_matched_genes <- intersect(
+  res_ftc_matched$gene_id, 
+  res_salmon_matched$gene_id
+)
+
+num_overlapping_unmatched_genes <- length(overlapping_matched_genes)  # This should ideally be 0
+
+# Print or use res_ftc_unmatched as needed
+#print(res_ftc_unmatched)
+
+
+```
+
+
+```{r Volcano plots}
+#################
+# Volcano plots #
+#################
+
+#-------------------------------
+# Define constants and functions
+#-------------------------------
+
+abs_lfc         <- 1.5
+sig_threshold   <- 0.05
+alpha           <- 0.4
+overlaps        <- 30
+reducing_factor <- 0.1
+skip_rows       <- 2
+
+conditional_coloring <- function(row){
+  if ((row[[1]] > abs_lfc) & (row[[2]] > -log10(sig_threshold))){
+    return("#66a182")
+  } else if ((row[[1]] < -abs_lfc) & (row[[2]] > -log10(sig_threshold))){
+    return("#d1495b")
+  } else {
+    return("grey50")
+  }
+}
+
+#-------------------------------
+# Prepare differential gene data
+#-------------------------------
+
+# Label structure: Assuming the following tx2gene Gene ID entry is DE:
+
+# Gene ID        | Transcript ID       | Gene Name
+# ---------------+---------------------+---------------------------------------
+# AMEX60DD000001 | AMEX60DD301000001.1 | nr:ZFP37_hs:ZNF568_AMEX60DD301000001.1
+# AMEX60DD000001 | AMEX60DD301000001.2 | hs:ZNF79_AMEX60DD301000001.2
+
+# Yields the label  "nr:ZFP37_hs:ZNF568_hs:ZNF79 \n AMEX60DD000001"
+# If there is no mapping to a homologous gene, the transcript IDs are shown
+
+data_g <- data.frame(log2FC = res_g_all_new$log2FoldChange,
+                     padj = -log10(res_g_all_new$padj),
+                     label = res_g_all_new$new_label,
+                     row.names = rownames(res_g_all_new)) %>% 
+          drop_na() %>%
+          mutate(color = apply(.[,c(1,2)], 1, conditional_coloring))
+
+data_g_anno <- data_g %>% 
+  
+  #Create column with rownames because rownames are lost when grouping. Filter out uninteresting genes
+  #Group by color to balance labels between up- and downregulated genes
+  mutate(gene_id = rownames(.)) %>% filter(color != "grey50") %>% group_by(color) %>%
+    
+  #Sort by padj and take a subset of the lowest p-values from each group, then ungroup
+  .[order(.$padj,decreasing=TRUE),] %>% dplyr::slice(1:10) %>% ungroup() #%>%
+
+  #The label column is created by taking each element of the gene_id column and filtering the tx2gene for that gene ID. The
+  #resulting dataframe lists all the transcripts and corresponding gene names, from which the AMEX part is removed and then
+  #collapsed back
+ # mutate(label = sapply(.$gene_id, function(x) (filter(tx2gene, gene_id == x) %>% select(gene_name) %>%
+        # sapply(function(y) gsub("_AMEX.*", "", y)) %>%  paste(collapse = "_")))) #%>%
+  
+  #It happens quite often that the transcripts belonging to a gene ID are mapping to the same names (like COL2). In that case,
+  #it is useless to report them multiple times. This row tests first, if there are multiple components (underscore is present)
+  #and if so, the unique elements of the label are selected. Example: COL2_COL2_hs:COL2 -> COL2_hs:COL2
+  #mutate(label = sapply(.$label, function(x) (ifelse(grepl("_", x), str_split(x, pattern = "_", simplify = T) %>% as.vector() %>% 
+         #unique() %>% paste(collapse = "_"), x)))) %>%
+  
+  #Sometimes, the resulting label is really long, filter by length of the label
+  #.[str_length(.$label) < 30,] #%>% .[seq(1,nrow(.),skip_rows),] %>%
+  
+  #Append the gene ID to the label
+  #unite(label, c("label", "gene_id"), sep = " \n ")
+  
+#---------------
+# Create ggplots
+#---------------
+
+fs_s <- 13
+fs_l <- 16
+
+
+# Define the genes you want to label
+genes_to_label <- c("KAZALD1", "BRCA1", "ABCC8", "TGFB1I1", "SLURP1L.S", "SOX9", "PCNA.L", "CTRB2", "S100A10", "SPP1", "FOXN3", "CDK1", "PRSS2", "TP53I13", "CTRL", "SSR1", "MAP7", "LOC115080062")
+
+
+# Filter your data to select the row with the most extreme log2FC value for each gene
+data_g_anno <- data_g %>%
+  filter(label %in% genes_to_label) %>%
+  group_by(label) %>%
+  slice_max(abs(log2FC), n = 1)
+
+# Modify gene names in data_g_anno
+data_g_anno <- data_g_anno %>%
+  mutate(label = case_when(
+    label == "TGFB1I1" ~ "TGFB1",
+    label == "KAZALD1" ~ "KAZALD2",  # Change KAZALD1 to KAZALD2
+    label == "LOC115080062" ~ "SPINK1",
+    TRUE ~ label  # Keep the original label for all other cases
+  ))
+
+v_g <- ggplot(data = data_g, aes(x = log2FC, y = padj)) +  # Use padj as is, without log transformation
+  geom_point(aes(color = color), alpha = alpha) +
+  scale_colour_identity() +
+  geom_label_repel(data = data_g_anno,
+                  aes(label = label),
+                  size = 2.5,
+                  max.overlaps = Inf,  # Allow as many overlaps as necessary
+                  point.padding = 0.3,
+                  box.padding = 0.5,
+                  alpha = 0.7,
+                  force = 1.5) +
+  xlim(-7, 7) +
+  labs(y = expression(-log[10](p[adj])),  # Keep original y-axis label
+       x = expression(log[2]~FC)) + 
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),  # White background
+    panel.background = element_rect(fill = "white", color = NA), # White panel background
+    axis.title.x = element_text(size = fs_l, margin = margin(t = 10, r = 0, b = 0, l = 0)),
+    axis.title.y = element_text(size = fs_l, margin = margin(t = 0, r = 10, b = 0, l = 0)),
+    axis.ticks = element_line(),
+    axis.ticks.length = unit(2, "mm"),
+    axis.text = element_text(size = fs_s),
+    panel.grid = element_line(size = 0.5),
+    panel.border = element_rect(fill = NA, color = "grey25", size = 1),
+    plot.margin = margin(1, 1, 1, 1, "cm"),
+    legend.text = element_text(size = fs_s, hjust = 0),
+    legend.title = element_blank(),
+    legend.position = c(.42, .88),
+    legend.background = element_rect(fill = alpha('white', 0.7), color = NA),
+    aspect.ratio = 1
+  )
+
+v_g
+# Specify the directory and filename
+output_directory <- "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/figures/"
+output_filename <- "v_g.png"
+
+# Save the heatmap as a PNG file
+ggsave(filename = file.path(output_directory, output_filename), plot = v_g, device = "png", dpi = 600, width = 5.5, height = 5.5)
+
+```
+
+```{r}
+############
+# Heatmaps #
+############
+
+# For differential expression analysis, the raw counts should be used: 
+#
+# http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html
+# "The variance stabilizing and rlog transformations are provided for applications other than differential testing, for example clustering 
+# of samples or other machine learning applications. For differential testing we recommend the DESeq function applied to raw counts as 
+# outlined above."
+#
+# For visualization and PCA, the data is transformed and a variance stabilization (VST for PCA, log for heatmaps) is applied. normTransform yields log2(n + 1).
+# A plot of the original values is not shown, as it has a similiar shape as the log2 transformation but vastly different sd, which makes a comparison hard to 
+# read. First, the effect of transformation using different methods is examined:
+
+ntd_g <- normTransform(ddsTxi_g)
+vsd_g <- vst(ddsTxi_g, blind=TRUE)
+rld_g <- rlog(ddsTxi_g, blind=TRUE)
+
+# Format the plots for the transcripts
+format_plot <- function(obj){
+  p <- obj$gg + theme_minimal()
+  p$layers[[1]] <- NULL
+  p <- p + geom_point(color = "tan", alpha = 0.3, size = 0.75)
+  p$layers[[3]] <- p$layers[[2]]
+  p$layers[[2]] <- p$layers[[1]]
+  p$layers[[1]] <- p$layers[[3]]
+  p$layers[[3]] <- NULL
+  p <- p + labs(x = "ranked mean")
+  p <- p + theme(panel.border = element_rect(fill = NA, color = "grey25", size = 0.25),
+                 panel.grid = element_blank(),
+                 axis.title.x = element_blank(),
+                 plot.title = element_text(hjust = 0.5))
+  return(p)
+}
+
+# Format the plots for the genes
+format_plot <- function(obj){
+  p <- obj$gg + theme_minimal()
+  p$layers[[1]] <- NULL
+  p <- p + geom_point(color = "tan", alpha = 0.15)
+  p$layers[[3]] <- p$layers[[2]]
+  p$layers[[2]] <- p$layers[[1]]
+  p$layers[[1]] <- p$layers[[3]]
+  p$layers[[3]] <- NULL
+  p <- p + labs(x = "ranked mean")
+  p <- p + theme(panel.border = element_rect(fill = NA, color = "grey25", size = 0.25),
+                 panel.grid = element_blank(),
+                 axis.title.x = element_blank(),
+                 plot.title = element_text(hjust = 0.5))
+  return(p)
+}
+
+p1_g <- meanSdPlot(assay(ntd_g)) %>% format_plot()
+p2_g <- meanSdPlot(assay(vsd_g)) %>% format_plot()
+p3_g <- meanSdPlot(assay(rld_g)) %>% format_plot()
+
+#Decide on common y-axis boundaries
+ylim_min_g <- min(ggplot_build(p1_g)$layout$panel_params[[1]]$y.range[1],
+                  ggplot_build(p2_g)$layout$panel_params[[1]]$y.range[1],
+                  ggplot_build(p3_g)$layout$panel_params[[1]]$y.range[1])
+ylim_max_g <- max(ggplot_build(p1_g)$layout$panel_params[[1]]$y.range[2],
+                  ggplot_build(p2_g)$layout$panel_params[[1]]$y.range[2],
+                  ggplot_build(p3_g)$layout$panel_params[[1]]$y.range[2])
+
+p1_g <- p1_g + ylim(c(ylim_min_g, ylim_max_g)) + ggtitle(expression(log[2]))
+p2_g <- p2_g + ylim(c(ylim_min_g, ylim_max_g)) + ggtitle("VST") + theme(axis.title.y = element_text(color = "white"))
+p3_g <- p3_g + ylim(c(ylim_min_g, ylim_max_g)) + ggtitle("Rlog") + theme(axis.title.y = element_text(color = "white"))
+
+h_g <- p1_g + p2_g + p3_g
+h_g <- wrap_elements(panel = h_g) +
+  labs(tag = "ranked mean") +
+  theme(
+    plot.tag = element_text(size = rel(1)),
+    plot.tag.position = "bottom"
+  )
+
+h_g
+#ggsave(paste0(prefix, "ranked_mean_g.png"), plot = h_g, device = "png", dpi = 600, width = 10, height = 5.5)
+
+#Based dependence of the sd on the ranked mean, it is reasonable to use VST or Rlog stabilized expression values. Here, VST stabilized expression is chosen,
+#because it does not squish the sd as much as the Rlog (rlog may be over shrinking the changes between groups, https://support.bioconductor.org/p/123969/).
+```
+
+
+
+
+```{r}
+#--------------------
+# Heatmaps gene-level
+#--------------------
+
+connor_gene_list <- read.csv("/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/019_heatmap_list.csv") %>%
+  select(1:2) 
+
+
+colnames(connor_gene_list) <- c('gene_name', 'category')
+
+rows_per_direction <- 30
+
+res_g_anno_up <- res_g_new %>% .[order(.$padj, decreasing = F),] %>% filter(log2FoldChange > 0) %>% mutate(rank = seq(1:nrow(.))) %>% .[1:rows_per_direction,]
+res_g_anno_down <- res_g_new %>% .[order(.$padj, decreasing = F),] %>% filter(log2FoldChange < 0) %>% mutate(rank = seq(1:nrow(.))) %>% .[1:rows_per_direction,]
+d_both <- rbind(res_g_anno_up, res_g_anno_down) %>% .[order(.$stat),]
+
+merged_df <- merge(res_g_new, connor_gene_list, by.x = c('new_label'), by.y = c('gene_name'), all.x = TRUE)
+
+
+merged_df <- merged_df %>%
+  mutate(new_label = ifelse(new_label == "KAZALD1", "KAZALD2", new_label))
+
+merged_df <- merged_df %>%
+  mutate(new_label = ifelse(new_label == "INS-IGF2", "IGF2", new_label))
+
+merged_df <- merged_df %>%
+  mutate(new_label = ifelse(new_label == "TGFB1I1", "TGFB1", new_label))
+
+merged_df <- merged_df %>%
+  mutate(new_label = ifelse(new_label == "LOC115080062", "SPINK1", new_label))
+
+
+
+merged_df <- merged_df[complete.cases(merged_df$category), ]
+
+# For genes with multiple entries, keep only the row with the highest log2FoldChange or the most negative
+merged_df <- merged_df %>%
+  group_by(new_label) %>%
+  filter(log2FoldChange == ifelse(all(log2FoldChange > 0), max(log2FoldChange), min(log2FoldChange))) %>%
+  ungroup()
+
+result <- merged_df %>%
+  arrange(category) %>%
+  mutate(rank = row_number())
+
+
+dg <- assay(vsd_g[result$gene_id,])
+rownames(dg) <- result$new_label
+colnames(dg) <- ddsTxi_g@colData@listData[["Identifier"]]
+
+
+annotation_col <- data.frame(
+  Identifier = sample_sheet$Identifier,
+  Condition = sample_sheet$Condition
+)
+
+rownames(annotation_col) <- annotation_col$Identifier
+
+annotation_col$Identifier <- NULL
+
+
+annotation_row <- data.frame(
+  new_label = result$new_label,
+  Category = result$category
+)
+
+# Handle duplicates in new_label by appending .1, .2, etc.
+annotation_row$new_label <- make.unique(annotation_row$new_label, sep = ".")
+
+# Set row names
+rownames(annotation_row) <- annotation_row$new_label
+annotation_row$new_label <- NULL
+
+# Create a list of colors
+#my_colour = list(
+  #Condition = c(Sham = "pink", Resection = "green" ),
+  #Category = setNames(
+    #c("green", "yellow", "orange", "red", "purple", "royalblue"),
+    #c(
+     # "Cell Cycle",
+     # "mRNA",
+      #"Antitumor",
+     # "Metabolic",
+     # "Protein Transport",
+     # "Apoptosis"
+   # )
+ # )
+#)
+
+
+
+#Create the heatmap
+heatmap_g <- pheatmap(dg,
+                    cutree_cols = 2,
+                    cutree_rows = 2,
+                    fontsize = 10,
+                    treeheight_row = 0,
+                    treeheight_col = 0,
+                    cellwidth = 21,
+                    cellheight = 10,
+                    cluster_rows = TRUE,
+                    cluster_cols = TRUE,
+                    show_rownames = T,
+                    show_colnames = F,
+                    legend = T,
+                    scale = 'row',
+                    annotation_col = annotation_col,
+                    #annotation_row = annotation_row,
+                    annotation_colors = my_colour,
+                    )
+
+# Specify the directory and filename
+output_directory <- "/n/holyscratch01/whited_lab/Users/cpowell5695/analysis/024_01_V1_PCR-cDNA_pancreas_connor_tanaka/figures/"
+output_filename <- "heatmap_g.png"
+
+# Save the heatmap as a PNG file
+ggsave(filename = file.path(output_directory, output_filename), plot = heatmap_g, device = "png", dpi = 600, width = 10, height = 15)
+
+```
+
+```{r}
+################################
+# Principle Component Analysis #
+################################
+
+#For the PCA, the VST transformed data is used. The DESeq2::plotPCA function considers only the 500 most variable genes for PCA by default. 500 is generally considered a good number of genes for bulk RNA (https://support.bioconductor.org/p/80966/) but as a new technology is used here, it is reasonable to inspect the variances of the genes first and based on that decide on a boundary of genes to use for PCA
+
+var_g <- rowVars(assay(vsd_g))
+names(var_g) <- rownames(vsd_g)
+var_g <- sort(var_g, decreasing = TRUE)
+var_g <- data.frame(values = var_g)
+
+p_var_g <- ggplot(var_g, aes(x = seq(1:nrow(var_g)), y = values)) + 
+  geom_point(stat = "identity", alpha = 1, size = .1) +
+  labs(x = "rank", y = "variance") +
+  ggtitle("Variance of Rlog gene counts") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p_var_g
+```
+
+```{r}
+#Based on the plots above, it is reasonable to choose the default top 100 entries (transcripts or genes). Proceeding with the PCA plots:
+fs_s <- 11
+fs_l <- 14
+
+# Extract the Identifier column from colData of vsd_g
+identifier <- colData(vsd_g)$Identifier
+
+
+pca_g <- DESeq2::plotPCA(vsd_g, intgroup=c("Condition"), ntop = 100) +
+  geom_vline(xintercept=c(0,0), linetype="dotted") +
+  geom_hline(yintercept=c(0,0), linetype="dotted") +
+  #geom_label_repel(aes(label = identifier), size = 3, hjust = -0.1, vjust = 0.1) + # Add labels based on subsetted rownames of vsd_g
+  scale_color_manual(values = c("#75ae97", "#ff7f27"),
+                     labels = c("intact_limb" = "intact limb", "blastema" = "blastema")) +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),  # White background
+    panel.background = element_rect(fill = "white", color = NA), # White panel background
+    axis.title.x = element_text(size = fs_l, margin = margin(t = 10, r = 0, b = 0, l = 0)),
+    axis.title.y = element_text(size = fs_l, margin = margin(t = 0, r = 10, b = 0, l = 0)),
+    axis.ticks = element_line(),
+    axis.ticks.length = unit(2, "mm"),
+    axis.text = element_text(size = fs_s),
+    panel.grid = element_line(size = 0.5),
+    panel.border = element_rect(fill = NA, color = "grey25", size = 1),
+    plot.margin = margin(1,1,1,1, "cm"),
+    legend.text = element_text(size = fs_s, hjust = 0),
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    legend.background = element_rect(fill=alpha('white', 0.7), color = NA),
+    aspect.ratio=1
+  )
+
+pca_g
+
+#ggsave(paste0(prefix, "pca_g.png"), plot = pca_g, device = "png", width = 5, height = 5, dpi = 600)
+```
+
+```{r}
+#As the DESeq2::plotPCA does not save the loadings of the PCA, it needs to be recomputed manually. Importantly, when recomputing the PCA, the "scale" argument of prcomp is set to FALSE, as the data transformed and it is not advisable to scale transformed data (https://support.bioconductor.org/p/60531/). However, in most scenarios, scaling transformed data is a must. Compare DESeq1::plotPCA with factoextra::fviz_pca_ind(...)
+
+#Genes
+pca_man_g <- prcomp(t(assay(vsd_g)[rownames(var_g)[1:100],]), scale = F)
+loadings_pc1_g <- pca_man_g[["rotation"]][,"PC1"] %>% sort(decreasing = TRUE) %>% as.data.frame()
+colnames(loadings_pc1_g) <- "loadings_pc1_g"
+
+d_pca_g <- loadings_pc1_g %>%
+
+  #The label column is created by taking each element of the gene_id column and filtering the tx2gene for that gene ID. The
+  #resulting dataframe lists all the transcripts and corresponding gene names, from which the AMEX part is removed and then
+  #collapsed back
+  mutate(label = sapply(rownames(.), function(x) (filter(res_g_all_new, gene_id == x) %>% select(new_label) %>%
+        sapply(function(y) gsub("_AMEX.*", "", y)) %>%  paste(collapse = "_")))) %>%
+  
+  #It happens quite often that the transcripts belonging to a gene ID are mapping to the same names (like COL2). In that case,
+  #it is useless to report them multiple times. This row tests first, if there are multiple components (underscore is present)
+  #and if so, the unique elements of the label are selected. Example: COL2_COL2_hs:COL2 -> COL2_hs:COL2
+  #mutate(label = sapply(.$label, function(x) (ifelse(grepl("_", x), str_split(x, pattern = "_", simplify = T) %>% as.vector() %>% 
+         #unique() %>% paste(collapse = "_"), x)))) %>%
+  
+  #Sometimes, the resulting label is really long, filter by length of the label
+  #.[str_length(.$label) < 30,] %>%
+  
+  #This deals with duplicated labels
+  #.[!(duplicated(.$label)),] %>%
+
+  #The dataframe is then reduced to contain the values with the 15 highest and 15 lowest loadings
+  .[c(1:25, (nrow(.)-24):nrow(.)),] %>%
+  
+  #This generates the colors
+  mutate(color = ifelse(.$loadings_pc1_g >= 0, "#115c1d", "#d1495b"))
+
+#Sort the loadings
+d_pca_g <- d_pca_g %>% .[order(.$loadings_pc1_g, decreasing = TRUE),] %>% mutate(rank = seq(1:nrow(.)))
+
+#Assign custom labels here if necessary, remove entries by labelling them as NA
+#d_pca_g$label <- paste0(rep("gene_", nrow(d_pca_g)), 1:nrow(d_pca_g))
+d_pca_g <- d_pca_g[!(is.na(d_pca_g$label)),]
+
+d_pca_g$label <- trimws(d_pca_g$label)
+
+#This deals with duplicated labels
+d_pca_g <- d_pca_g[!(duplicated(d_pca_g$label)),]
+
+# Remove rows where label begins with "AMEX"
+d_pca_g <- d_pca_g[!grepl("^AMEX", d_pca_g$label), , drop = FALSE]
+
+# Remove rows where label begins with "LOC"
+d_pca_g <- d_pca_g[!grepl("^LOC", d_pca_g$label), , drop = FALSE]
+
+#Convert to factor
+d_pca_g$label <- factor(d_pca_g$label, levels = d_pca_g$label)
+
+fs_s <- 12
+fs_l <- 18
+
+loadings_pc1_g <- ggplot(data = d_pca_g, aes(x = label, y = loadings_pc1_g, fill = color, color = color)) +
+  geom_point(alpha = 0.7, position = "identity", size = 3) +
+  geom_hline(yintercept = c(0,0), linewidth = 0.25, color = "grey25") +
+  ylim(-0.25, 0.25) +
+  scale_fill_identity() +
+  scale_color_identity() +
+  scale_x_discrete(breaks = d_pca_g %>% .[order(.$loadings_pc1_g, decreasing = TRUE), "label"]) +
+  ylab("loading") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),  # White background
+    panel.background = element_rect(fill = "white", color = NA), # White panel background
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = fs_l, margin = margin(t = 0, r = 10, b = 0, l = 0)),
+    axis.text = element_text(size = fs_s),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.ticks = element_line(),
+    axis.ticks.length = unit(2, "mm"),
+    
+    legend.position = c(0.21, 0.88),
+    legend.text = element_text(size = fs_s, color = "grey25"),
+    legend.background = element_rect(fill=alpha('white', 0.7), color = NA),
+    legend.title = element_blank(),
+    
+    panel.grid = element_line(size = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(fill = NA, color = "grey25", size = 1),
+  )
+
+loadings_pc1_g
+ggsave(paste0(prefix, "loadings_pc1_g.png"), plot = loadings_pc1_g, device = "png", dpi = 600, height = 4, width = 8)
+
+```
+
+```{r}
+#To examine what causes the intra-sample variance, the same is done for PC2
+loadings_pc2_g <- pca_man_g[["rotation"]][,"PC2"] %>% sort(decreasing = TRUE) %>% as.data.frame()
+colnames(loadings_pc2_g) <- "loadings_pc2_g"
+
+d_pca_g <- loadings_pc2_g %>%
+
+  #The label column is created by taking each element of the gene_id column and filtering the tx2gene for that gene ID. The
+  #resulting dataframe lists all the transcripts and corresponding gene names, from which the AMEX part is removed and then
+  #collapsed back
+  mutate(label = sapply(rownames(.), function(x) (filter(res_g_all_new, gene_id == x) %>% select(new_label) %>%
+         sapply(function(y) gsub("_AMEX.*", "", y)) %>%  paste(collapse = "_")))) %>%
+  
+  #It happens quite often that the transcripts belonging to a gene ID are mapping to the same names (like COL2). In that case,
+  #it is useless to report them multiple times. This row tests first, if there are multiple components (underscore is present)
+  #and if so, the unique elements of the label are selected. Example: COL2_COL2_hs:COL2 -> COL2_hs:COL2
+  #mutate(label = sapply(.$label, function(x) (ifelse(grepl("_", x), str_split(x, pattern = "_", simplify = T) %>% as.vector() %>% 
+         #unique() %>% paste(collapse = "_"), x)))) %>%
+  
+  #Sometimes, the resulting label is really long, filter by length of the label
+  #.[str_length(.$label) < 30,] %>%
+  
+  #This deals with duplicated labels
+  #.[!(duplicated(.$label)),] %>%
+
+  #The dataframe is then reduced to contain the values with the 15 highest and 15 lowest loadings
+  .[c(1:25, (nrow(.)-24):nrow(.)),] %>%
+  
+  #This generates the colors
+  mutate(color = ifelse(.$loadings_pc2_g >= 0, "#115c1d", "#d1495b"))
+
+#Sort the loadings
+d_pca_g <- d_pca_g %>% .[order(.$loadings_pc2_g, decreasing = TRUE),] %>% mutate(rank = seq(1:nrow(.)))
+
+#Assign custom labels here if necessary, remove entries by labelling them as NA
+#d_pca_g$label <- paste0(rep("gene_", nrow(d_pca_g)), 1:nrow(d_pca_g))
+d_pca_g <- d_pca_g[!(is.na(d_pca_g$label)),]
+
+#Trim white space after entry in label column
+d_pca_g$label <- trimws(d_pca_g$label)
+
+#This deals with duplicated labels
+d_pca_g <- d_pca_g[!(duplicated(d_pca_g$label)),]
+
+# Remove rows where label begins with "AMEX"
+d_pca_g <- d_pca_g[!grepl("^AMEX", d_pca_g$label), , drop = FALSE]
+
+# Remove rows where label begins with "LOC"
+d_pca_g <- d_pca_g[!grepl("^LOC", d_pca_g$label), , drop = FALSE]
+
+#Convert to factor
+d_pca_g$label <- factor(d_pca_g$label, levels = d_pca_g$label)
+
+fs_s <- 12
+fs_l <- 18
+
+loadings_pc2_g <- ggplot(data = d_pca_g, aes(x = label, y = loadings_pc2_g, fill = color, color = color)) +
+  geom_point(alpha = 0.7, position = "identity", size = 3) +
+  geom_hline(yintercept = c(0,0), linewidth = 0.25, color = "grey25") +
+  ylim(-0.3, 0.3) +
+  scale_fill_identity() +
+  scale_color_identity() +
+  scale_x_discrete(breaks = d_pca_g %>% .[order(.$loadings_pc2_g, decreasing = TRUE), "label"]) +
+  ylab("loading") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),  # White background
+    panel.background = element_rect(fill = "white", color = NA), # White panel background
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = fs_l, margin = margin(t = 0, r = 10, b = 0, l = 0)),
+    axis.text = element_text(size = fs_s),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.ticks = element_line(),
+    axis.ticks.length = unit(2, "mm"),
+    legend.position = c(0.21, 0.88),
+    legend.text = element_text(size = fs_s, color = "grey25"),
+    legend.background = element_rect(fill=alpha('white', 0.7), color = NA),
+    legend.title = element_blank(),
+    panel.grid = element_line(size = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(fill = NA, color = "grey25", size = 1),
+  )
+
+loadings_pc2_g
+ggsave(paste0(prefix, "loadings_pc2_g.png"), plot = loadings_pc2_g, device = "png", dpi = 600, height = 4, width = 8)
+```
+
