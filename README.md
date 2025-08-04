@@ -48,10 +48,12 @@ This repository is maintained by members of the **Whited Lab** at the **Harvard 
 - **Email:** [connor_powell@fas.harvard.edu](mailto:connor_powell@fas.harvard.edu)  
 - **Role:** Project Lead Scientist
 
+
 **Repository Contact**  
 - **Name:** Hani Singer  
 - **Email:** [hani_singer@fas.harvard.edu](mailto:hani_singer@fas.harvard.edu)  
 - **Role:** Research Laboratory Manager
+
 
 **Principal Investigator**  
 - **Name:** Dr. Jessica L. Whited  
