@@ -2,7 +2,7 @@
 
 This repository contains all scripts and resources used to generate the data and figures for the publication:
 
-**Pancreatic injury induces β-cell regeneration in axolotl** *(DOI:10.1002/dvdy.70060)*(https://doi.org/10.1002/dvdy.70060)
+**Pancreatic injury induces β-cell regeneration in axolotl** ([DOI:10.1002/dvdy.70060](https://doi.org/10.1002/dvdy.70060))
 
 ---
 
@@ -10,7 +10,7 @@ This repository contains all scripts and resources used to generate the data and
 
 To reproduce the analysis end-to-end, run the scripts in `./scripts/` in the following order:
 
-   ** note : prepare scanpy_env using `./bin/scanpy_env.yml` prior to running scripts 1 - 2.2
+   ** note : prepare scanpy_env using `./bin/scanpy_env.yml` prior to running scripts 1 - 2
 
 | Step | Script                                   | Purpose                                                                 |
 |------|------------------------------------------|-------------------------------------------------------------------------|
