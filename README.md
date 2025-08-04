@@ -45,7 +45,7 @@ This repository is maintained by members of the **Whited Lab** at the **Harvard 
 
 **Author Contact**  
 - **Name:** Connor Powell
-- **Email:** [connor_powell@fas.harvard.edu](mailto:connor_powell@fas.harvard.edu)  
+- **Email:** [powell.co@northeastern.edu](mailto:powell.co@northeastern.edu)  
 - **Role:** Project Lead Scientist
 
 
