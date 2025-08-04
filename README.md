@@ -14,7 +14,7 @@ To reproduce the analysis end-to-end, run the scripts in `./scripts/` in the fol
 
 | Step | Script                                   | Purpose                                                                 |
 |------|------------------------------------------|-------------------------------------------------------------------------|
-| 0    | `0_dataverse_download.sh`                | Downloads raw FASTQ files (`./data/`), reference files (`./ref/`), and Seurat objects (`./output/seurat/`) from Dataverse |
+| 0    | `0_dataverse_download.sh`                | Downloads raw bam file (`./data/bam`), and samplesheet (`./ref`) |
 | 1    | `1_transcriptome_download.sh`                          | Downloads transcriptome                          |
 | 2  | `2_alignment_quant.sh`                     | Aligns and quantifies the sequencing data                           |
 | 3    | `3_DE_analysis.Rmd` | Runs DESeq2 and generates plots       |
