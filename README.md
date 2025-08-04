@@ -2,7 +2,10 @@
 
 This repository contains all scripts and resources used to generate the data and figures for the publication:
 
-**Powell CJ, Singer HD, Juarez AR, et al. Pancreatic injury induces β-cell regeneration in axolotl. Developmental Dynamics. 2025; 1-13** ([DOI:10.1002/dvdy.70060](https://doi.org/10.1002/dvdy.70060))
+**Powell CJ, Singer HD, Juarez AR, et al.**  
+*Pancreatic injury induces β-cell regeneration in axolotl.*  
+Developmental Dynamics. 2025;1–13.  
+[https://doi.org/10.1002/dvdy.70060](https://doi.org/10.1002/dvdy.70060)
 
 ---
 
